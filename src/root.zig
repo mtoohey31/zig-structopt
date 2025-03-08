@@ -407,6 +407,7 @@ pub fn Impl(comptime Spec: type) type {
 pub const ParseOptions = struct {
     binary_name: ?[]const u8 = null,
     description: ?[]const u8 = null,
+    allow_repeats: bool = false,
 };
 
 pub fn parseIt(
@@ -627,6 +628,10 @@ pub fn parseIt(
                 if (flag.options().long_names) |long_names| {
                     inline for (long_names) |long_name| {
                         if (mem.eql(u8, arg_name, long_name)) {
+                            if (!options.allow_repeats and seen[flag_i]) {
+                                bail("flag \"--" ++ long_name ++ "\" specified multiple times\n", .{});
+                            }
+
                             switch (flag.resolveFlagHandler()) {
                                 .occurrence => |h| {
                                     if (arg_value != null) {
@@ -667,6 +672,10 @@ pub fn parseIt(
                     if (flag.options().short_names) |short_names| {
                         inline for (short_names) |short_name| {
                             if (name == short_name) {
+                                if (!options.allow_repeats and seen[flag_i]) {
+                                    bail("flag \"-" ++ &[_]u8{short_name} ++ "\" specified multiple times\n", .{});
+                                }
+
                                 switch (flag.resolveFlagHandler()) {
                                     .occurrence => |h| @field(res, flag.field.name) = h(arena),
                                     .value => |h| {
@@ -815,7 +824,7 @@ pub fn parse(comptime Spec: type, comptime options: ParseOptions, arena: mem.All
 const heap = std.heap;
 const recover = @import("recover");
 
-fn expectParse(comptime Spec: type, cmd_line_utf8: []const u8, expected: Impl(Spec)) !void {
+fn expectParseO(comptime Spec: type, comptime options: ParseOptions, cmd_line_utf8: []const u8, expected: Impl(Spec)) !void {
     comptime if (!builtin.is_test) @compileError("expectParse should only be used in tests");
 
     var arena = heap.ArenaAllocator.init(testing.allocator);
@@ -825,7 +834,11 @@ fn expectParse(comptime Spec: type, cmd_line_utf8: []const u8, expected: Impl(Sp
     var it = try AIG.init(testing.allocator, cmd_line_utf8);
     defer it.deinit();
 
-    try testing.expectEqualDeep(expected, parseIt(Spec, AIG, .{}, arena.allocator(), &it));
+    try testing.expectEqualDeep(expected, parseIt(Spec, AIG, options, arena.allocator(), &it));
+}
+
+fn expectParse(comptime Spec: type, cmd_line_utf8: []const u8, expected: Impl(Spec)) !void {
+    try expectParseO(Spec, .{}, cmd_line_utf8, expected);
 }
 
 fn expectParseError(comptime Spec: type, cmd_line_utf8: []const u8, expected_error: []const u8) !void {
@@ -864,8 +877,12 @@ test {
     try expectParse(Hello, "hello --name=alice", .{ .name = "alice" });
     try expectParse(Hello, "hello -n bob", .{ .name = "bob" });
     try expectParse(Hello, "hello -njoe", .{ .name = "joe" });
+    try expectParseO(Hello, .{ .allow_repeats = true }, "hello --name alice --name bob", .{ .name = "bob" });
+    try expectParseO(Hello, .{ .allow_repeats = true }, "hello -n alice -n joe", .{ .name = "joe" });
     try expectParseError(Hello, "hello --name", "expected value for flag \"--name\"\n");
     try expectParseError(Hello, "hello -n", "expected value for flag \"-n\"\n");
+    try expectParseError(Hello, "hello --name alice --name bob", "flag \"--name\" specified multiple times\n");
+    try expectParseError(Hello, "hello -n alice -n bob", "flag \"-n\" specified multiple times\n");
     try expectParseError(Hello, "hello --foo", "unknown flag \"--foo\"\n");
     try expectParseError(Hello, "hello -f", "unknown flag \"-f\"\n");
     try expectParseError(Hello, "hello", "required flag \"--name\" was not provided\n");
